@@ -1,0 +1,544 @@
+---
+title: "DSP DE Analysis - Region Comparisons within Cell Types - Beck Canine CTA"
+format:
+  html:
+    code-fold: true
+editor: visual
+
+params:
+  data.folder: "/Users/cauleyes/CPTR/CPTR-11_Beck/"
+  QC.folder: "/Users/cauleyes/CPTR/CPTR-11_Beck/QC/"
+  results.folder: "/Users/cauleyes/CPTR/CPTR-11_Beck/DE/"
+  run.folder: "1_6_25/"
+  DSP.analysis.folder: "/Users/cauleyes/CPTR/DSP_Analysis/"
+---
+
+```{r Setup}
+#| warning: false
+#| message: false
+
+library(GeomxTools)
+library(dplyr)
+library(limma)
+library(edgeR)
+library(ggplot2)
+library(ggrepel)
+library(stringr)
+library(PCAtools)
+library(readxl)
+library(gridExtra)
+library(grid)
+library(DSPWorkflow)
+library(VennDiagram)
+library(gt)
+
+#results.folder <- "/Users/cauleyes/CPTR/CPTR-11_Beck/DE/"
+#data.folder <- "/Users/cauleyes/CPTR/CPTR-11_Beck/"
+#QC.folder <- "/Users/cauleyes/CPTR/CPTR-11_Beck/QC/"
+#run.folder <- "10_17_24/"
+#DSP.analysis.folder <- "/Users/cauleyes/CPTR/DSP_Analysis/"
+
+# Source the helper functions
+source(paste0(params$DSP.analysis.folder, "DSP_functions.R"))
+
+DE.results.folder <- paste0(params$results.folder, params$run.folder)
+DE.results.files <- list.files(DE.results.folder)
+```
+
+### Load the Normalized Counts and Annotation
+
+```{r Load Normalized Counts}
+
+normalized.object <- get(load(file = paste0(params$QC.folder,
+                                       "Beck_q3_object_low_ratio_removed.RDA")))
+
+# Add a column to the annotation data for comparisons where there is only 1 grouping needed
+pData(normalized.object)$group_field <- "group"
+```
+
+### Set up the Annotation Colors
+
+```{r Annotation Colors}
+
+# Set up annotation colors for the heatmaps
+anno.colors = list(
+      region = c(Extratumoral = "#bd97cb", 
+                Intratumoral = "seagreen1", 
+                LymphNode = "#fbc740"), 
+      Sub_region = c('TLS' = "#36eee0", 
+                     'Non-TLS' = "#f652a0", 
+                     'Tumor Center' = "#4c5270", 
+                     'Tumor Margin' = "#bcece0", 
+                     'none' = "grey")
+      
+      )
+
+```
+
+### Create a Generalized DE Function
+
+```{r Generalized DE Function}
+
+run_de <- function(object, 
+                   subset.field, 
+                   subset.field.group, 
+                   contrast.field, 
+                   contrast.groups, 
+                   export.results = FALSE
+                   ){
+  
+  # Create a list with the initial subset field and value
+  subset.field.list <- list()
+  subset.field.list[[subset.field]] = subset.field.group
+  
+  # Subset the object for the initial field and value
+  subset.input <- subset_object_for_lmm(object = object, 
+                                        subset.list = subset.field.list)
+  
+  # Setup annotation groups for the contrast
+  # Order is Condition, Reference
+  #contrast.groups <- c("TCells", "BCells")
+  
+  #contrast.field <- "segment"
+  
+  # Define the name of the contrast
+  contrast.name <- paste0(subset.field.group, 
+                          "_", 
+                          contrast.groups[[1]], 
+                          "_", 
+                          contrast.groups[[2]])
+  
+  # Gather the field and values to be used in defining contrasts
+  contrast.groups.list <- list()
+  contrast.groups.list[[contrast.field]] = contrast.groups
+   
+  # Filter data for the chosen annotations
+  #object <- normalized.object
+  
+  # Generate the counts, annotation, and subset object for lmm
+  lmm.input <- subset_object_for_lmm(object = subset.input$subset.object, 
+                                     subset.list = contrast.groups.list)
+  
+  # Create summary table of group counts
+  summary.table.df <- pData(lmm.input$subset.object) %>%  
+    select(c(names(contrast.groups.list)))
+  
+  summary.table <- table(summary.table.df)
+  
+  print(summary.table)
+  
+  # Check if the DE results have already been generated
+  DE.results.folder <- paste0(params$results.folder, params$run.folder)
+  DE.results.files <- list.files(DE.results.folder)
+  
+  DE.result.file <- grepl(paste0(contrast.name, "_de"), DE.results.files)
+  if(sum(DE.result.file) == 1) {
+    
+    # Load the previously generated DE results
+    results.df <- as.data.frame(read.csv(paste0(params$results.folder, 
+                                                params$run.folder, 
+                                                contrast.name, 
+                                                "_de.csv")))
+                                
+  } else {
+    # Use the function from the DSPWorkflow package
+  
+    # Within slide analysis
+    # Listed contrasts are condition, reference 
+    results.list <- diffExpr(object = lmm.input$subset.object, 
+                          analysis.type = "Within Groups", 
+                          region.col = contrast.field, 
+                          regions = contrast.groups, 
+                          group.col = subset.field, 
+                          groups = subset.field.group, 
+                          n.cores = parallel::detectCores())
+    
+    # Create the results df
+    results.df <- results.list$results
+    
+    # Adjust column names
+    logfc.column <- colnames(results.df[grepl("logFC",colnames(results.df))])
+    results.df$logfc <- results.df[[logfc.column]]
+  
+    pval.column <- colnames(results.df[grepl("_pval",colnames(results.df))])
+    results.df$pval <- results.df[[pval.column]]
+  
+    adj.pval.column <- colnames(results.df[grepl("adjpval",colnames(results.df))])
+    results.df$padj <- results.df[[adj.pval.column]]
+  
+    results.df$gene <- results.df$Gene
+  
+    # Keep only the necessary columns
+    results.df <- results.df %>% select(c("gene", 
+                                        "logfc", 
+                                        "pval", 
+                                        "padj"))
+    
+    # Export the results
+    export.deg.list <- export.results
+    if(export.deg.list == TRUE){ 
+     write.csv(results.df, 
+               file = paste0(params$results.folder, 
+                             params$run.folder, 
+                             contrast.name, "_de.csv"), 
+               row.names = FALSE)  
+    }
+    
+  }
+  
+  # Make the volcano plot
+  volcano.output <- make_volcano(lmm.results = results.df, 
+                                 title = contrast.name, 
+                                 legend.title = paste0("Expression in ", contrast.groups[1]), 
+                                 x.axis.title = "logFC", 
+                                 fc.limit = 1, 
+                                 pos.label.limit = 1, 
+                                 neg.label.limit = -1)
+  
+  # Export the volcano
+  export.volcano <- export.results
+  if(export.volcano == TRUE){ 
+    ggsave(filename = paste0(params$results.folder, 
+                             params$run.folder, 
+                             contrast.name, 
+                             "_volcano_plot.png"), 
+           width = 14, 
+           height = 10)
+  }
+  
+  # Subset the annotation just for the heatmap annotations of interest
+  annotation.heatmap <- lmm.input$annotation %>% 
+    select(names(anno.colors)) %>% 
+    arrange(.data[[contrast.field]])
+  
+  # Order the annotation
+  #annotation.heatmap <- annotation.heatmap[order(annotation.heatmap$Treatment_group), ]
+  #annotation.heatmap <- annotation.heatmap[order(annotation.heatmap$segment), ]
+  
+  heatmap.plot <- make_heatmap(
+    normalized.log.counts.df = lmm.input$log.counts, 
+    de.results = results.df, 
+    top.degs = TRUE, 
+    annotation.column = annotation.heatmap,
+    annotation.row = NULL, 
+    anno.colors = anno.colors, 
+    cluster.rows = TRUE, 
+    cluster.columns = TRUE, 
+    main.title = contrast.name, 
+    row.gaps = NULL, 
+    column.gaps = NULL, 
+    show.colnames = FALSE, 
+    show.rownames = TRUE)
+  
+  export.heatmap <- export.results
+  if(export.heatmap == TRUE){
+    
+    ggsave(heatmap.plot, 
+           filename = paste0(params$results.folder, 
+                             params$run.folder, 
+                             contrast.name, 
+                             "_heatmap_plot.png"), 
+           width = 14, 
+           height = 10)
+    
+  }
+  
+  return(list("results" = results.df, 
+              "volcano" = volcano.output, 
+              "heatmap" = heatmap.plot))
+  
+}
+
+
+
+```
+
+### Run DE
+
+### T Cells
+
+#### Region Comparison
+
+#### Extratumoral vs. Intratumoral
+
+```{r T Cells Extra Intra}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "TCells", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Extratumoral", "Intratumoral"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+```
+
+#### Extratumoral vs. Lymph Node
+
+```{r T Cells Extra Lymph}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "TCells", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Extratumoral", "LymphNode"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+
+```
+
+#### Intratumoral vs. Lymph Node
+
+```{r T Cells Intra Lymph}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "TCells", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Intratumoral", "LymphNode"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+```
+
+#### Sub-region Comparison
+
+#### Extratumoral - TLS vs. Non-TLS
+
+```{r T Cells TLS Non-TLS}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "TCells", 
+                                contrast.field = "Sub_region", 
+                                contrast.groups = c("TLS", "Non-TLS"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+```
+
+#### Intratumoral - Tumor Center vs. Tumor Margin
+
+```{r T Cells Tumor Center Tumor Margin}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "TCells", 
+                                contrast.field = "Sub_region", 
+                                contrast.groups = c("Tumor Center", "Tumor Margin"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+```
+
+### B Cells
+
+#### Region Comparison
+
+#### Extratumoral vs. Intratumoral
+
+```{r B Cells Extra Intra}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "BCells", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Extratumoral", "Intratumoral"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+
+```
+
+#### Extratumoral vs. Lymph Node
+
+```{r B Cells Extra Lymph}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "BCells", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Extratumoral", "LymphNode"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+```
+
+#### Intratumoral vs. Lymph Node
+
+```{r B Cells Intra Lymph}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "BCells", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Intratumoral", "LymphNode"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+```
+
+#### Sub-region Comparison
+
+#### Extratumoral - TLS vs. Non-TLS
+
+```{r B Cells TLS Non-TLS}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "BCells", 
+                                contrast.field = "Sub_region", 
+                                contrast.groups = c("TLS", "Non-TLS"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+```
+
+### Macrophages
+
+#### Region Comparison
+
+#### Extratumoral vs. Intratumoral
+
+```{r Macrophages Extra Intra}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "Macrophages", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Extratumoral", "Intratumoral"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+```
+
+#### Extratumoral vs. Lymph Node
+
+```{r Macrophages Extra Lymph}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "Macrophages", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Extratumoral", "LymphNode"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+```
+
+#### Intratumoral vs. Lymph Node
+
+```{r Macrophages Intra Lymph}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "Macrophages", 
+                                contrast.field = "region", 
+                                contrast.groups = c("Intratumoral", "LymphNode"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+```
+
+#### Sub-region Comparison
+
+#### Extratumoral - TLS vs. Non-TLS
+
+```{r Macrophages Tumor Center Tumor Margin}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "Macrophages", 
+                                contrast.field = "Sub_region", 
+                                contrast.groups = c("TLS", "Non-TLS"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+```
+
+#### Intratumoral - Tumor Center vs. Tumor Margin
+
+```{r Macrophages Tumor Center Tumor Margin}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "Macrophages", 
+                                contrast.field = "Sub_region", 
+                                contrast.groups = c("Tumor Center", "Tumor Margin"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+
+
+```
+
+### Tumor Cells
+
+#### Intratumoral - Tumor Center vs. Tumor Margin
+
+```{r Macrophages Tumor Center Tumor Margin}
+#| warning: false
+#| message: false
+
+de.results <- run_de(object = normalized.object, 
+                                subset.field = "segment", 
+                                subset.field.group = "Tumor", 
+                                contrast.field = "Sub_region", 
+                                contrast.groups = c("Tumor Center", "Tumor Margin"), 
+                                export.results = TRUE)
+
+print(de.results$volcano)
+print(de.results$heatmap)
+```

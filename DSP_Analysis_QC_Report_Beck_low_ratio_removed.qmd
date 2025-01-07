@@ -7,8 +7,8 @@ editor: visual
 #css: "qc_report_style.css"
 
 params:
-  data.folder: "/Users/cauleyes/CPTR/Leblanc_Beck/"
-  results.folder: "/Users/cauleyes/CPTR/Leblanc_Beck/QC/"
+  data.folder: "/Users/cauleyes/CPTR/CPTR-11_Beck/"
+  results.folder: "/Users/cauleyes/CPTR/CPTR-11_Beck/QC/"
   run.folder: "9_26_24/"
   dsp.analysis.folder: "/Users/cauleyes/CPTR/DSP_Analysis/"
 ---
@@ -847,17 +847,17 @@ if(export.counts == TRUE){
       # Quantile Counts
     write.csv(quantile.normalization.counts, 
               file = paste0(params$results.folder,
-                            "Tosato_quantile_counts_vessel.csv"))
+                            "Tosato_quantile_counts_low_ratio_removed.csv"))
     
   } else if(norm.type == "q3") {
     
     save(q3.normalization.object, 
          file = paste0(params$results.folder,
-                       "Tosato_q3_object_vessel.RDA"))
+                       "Beck_q3_object_low_ratio_removed.RDA"))
     
     write.csv(q3.normalization.output$object@assayData$q_norm, 
               file = paste0(params$results.folder,
-                            "Tosato_q3_counts_vessel.csv"))
+                            "Tosato_q3_counts_low_ratio_removed.csv"))
     
   }
     
