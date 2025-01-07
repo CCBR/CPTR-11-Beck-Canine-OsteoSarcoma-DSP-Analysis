@@ -528,7 +528,7 @@ print(de.results$heatmap)
 
 #### Intratumoral - Tumor Center vs. Tumor Margin
 
-```{r Macrophages Tumor Center Tumor Margin}
+```{r Tumor Tumor Center Tumor Margin}
 #| warning: false
 #| message: false
 
